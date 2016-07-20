@@ -3,7 +3,7 @@
   This software is released under a BSD license, adapted from
   http://opensource.org/licenses/bsd-license.php
 
-  Copyright (c) 2010-2011, Brian M. Clapper
+  Copyright (c) 2010-2015, Brian M. Clapper
   All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
@@ -40,10 +40,10 @@ package org.clapper.sbt.izpack
 import sbt.RichFile
 
 import scala.annotation.tailrec
-import scala.xml.{Attribute => XMLAttribute,
-                  Elem => XMLElem,
+import scala.xml.{Elem => XMLElem,
                   Node => XMLNode,
                   UnprefixedAttribute}
+import scala.language.implicitConversions
 
 import java.io.File
 

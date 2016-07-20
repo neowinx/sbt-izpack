@@ -3,7 +3,7 @@
   This software is released under a BSD license, adapted from
   http://opensource.org/licenses/bsd-license.php
 
-  Copyright (c) 2010-2011, Brian M. Clapper
+  Copyright (c) 2010-2015, Brian M. Clapper
   All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
@@ -39,43 +39,30 @@ package org.clapper.sbt.izpack
 
 import scala.annotation.tailrec
 
-import scala.xml.{Attribute => XMLAttribute,
-                  Comment => XMLComment,
+import scala.xml.{Comment => XMLComment,
                   Elem => XMLElem,
                   MetaData => XMLMetaData,
                   Node => XMLNode,
                   NodeSeq => XMLNodeSeq,
                   Null => XMLNull,
                   PrettyPrinter => XMLPrettyPrinter,
-                  Source => XMLSource,
                   Text => XMLText,
                   TopScope => XMLTopScope,
                   UnprefixedAttribute,
                   XML}
 
-import scala.reflect.BeanProperty
+import scala.beans.BeanProperty
 import scala.collection.JavaConversions._
 import scala.collection.mutable.{ListBuffer,
                                  Map => MutableMap,
                                  Set => MutableSet}
-import scala.collection.generic.Growable
 import scala.io.Source
 import scala.util.matching.Regex
 import org.yaml.snakeyaml.Yaml
 import org.yaml.snakeyaml.constructor.Constructor
 import java.io.File
-import java.util.{ArrayList => JArrayList,
-                  Collections => JCollections,
-                  List => JList,
-                  Map => JMap,
-                  HashMap => JHashMap}
-import sbt.{Logger,
-            Level => LogLevel,
-            ModuleID,
-            RichFile,
-            Path,
-            PathFinder,
-            UpdateReport}
+import java.util.{ArrayList => JArrayList, List => JList, HashMap => JHashMap}
+import sbt.{Logger, Level => LogLevel, RichFile}
 import grizzled.string.template.UnixShellStringTemplate
 import grizzled.string.{util => StringUtil}
 import grizzled.file.{util => FileUtil}
@@ -99,10 +86,9 @@ trait OperatingSystemConstraints extends Util {
 
   def setOs(osNames: String) = {
     val names = ListDelims.split(osNames).toList
-    val bad = names.filter{! Legal(_)}
-    if (bad.length > 0)
-      izError("Bad operating system name(s): %s" format
-              (bad mkString ", "))
+    val bad = names.filterNot{ Legal(_) }
+    if (! bad.isEmpty)
+      izError("Bad operating system name(s): %s" format (bad mkString ", "))
 
     operatingSystemsList = names
   }
@@ -147,10 +133,10 @@ private[izpack] trait XMLable {
   def toXML: XMLElem
 
   def seqToXML(name: String, things: Seq[XMLable]) = {
-    if (things.length > 0)
-      things.map(_.toXML)
-    else
-      new XMLComment("No " + name + " sections")
+    things.toList match {
+      case Nil  => new XMLComment("No " + name + " sections")
+      case list => list.map(_.toXML)
+    }
   }
 }
 
@@ -165,7 +151,7 @@ private[izpack] trait OptionStrings extends OptionKeys {
     options.get(name).map(s => true).getOrElse(false)
 
   protected def setOption(name: String, value: String) = {
-    if ((value != null) && (value.trim.length > 0))
+    for (v <- Option(value) if v.trim.length > 0)
       options += name -> value.toOption
   }
 
@@ -185,8 +171,12 @@ private[izpack] trait OptionStrings extends OptionKeys {
 
   protected def strOptToXMLElement(name: String): XMLNode = {
     options.getOrElse(name, None).map {
-      text => XMLElem(null, name, XMLNode.NoAttributes, XMLTopScope,
-                      XMLText(text))
+      text => XMLElem(prefix        = null,
+                      label         = name,
+                      attributes    = XMLNode.NoAttributes,
+                      scope         = XMLTopScope,
+                      minimizeEmpty = false,
+                      child         = XMLText(text))
     }.getOrElse(new XMLComment("No " + name + " element"))
   }
 }
@@ -233,8 +223,12 @@ private[izpack] trait IzPackSection extends OptionKeys with XMLable {
     val node = sectionToXML
     val custom = new XMLComment("Custom XML") ++ customXML
     val allChildren = node.child ++ custom
-    XMLElem(node.prefix, node.label, node.attributes, node.scope,
-            allChildren: _*)
+    XMLElem(prefix        = node.prefix,
+            label         = node.label,
+            attributes    = node.attributes,
+            scope         = node.scope,
+            minimizeEmpty = false,
+            child         = (allChildren: _*))
   }
 
   /** Create an empty XML node IFF a boolean flag is set. Otherwise,
@@ -280,8 +274,12 @@ private[izpack] trait IzPackSection extends OptionKeys with XMLable {
       new XMLComment("No " + name + " element")
 
     else {
-      val elem = XMLElem(null, name, XMLNode.NoAttributes, XMLTopScope,
-                         XMLText(""))
+      val elem = XMLElem(prefix        = null,
+                         label         = name,
+                         attributes    = XMLNode.NoAttributes,
+                         scope         = XMLTopScope,
+                         minimizeEmpty = false,
+                         child         = XMLText(""))
       elem addAttributes attrs.toSeq
     }
   }
@@ -290,6 +288,8 @@ private[izpack] trait IzPackSection extends OptionKeys with XMLable {
 private[izpack] object Constants{
   val ListDelims           = """[\s,]+""".r
   val IzPackVariableEscape = "@@@"
+  val PluginBlurb          = "sbt-izpack (http://software.clapper.org/sbt-izpack/)"
+
 }
 
 /** The configuration parser.
@@ -300,12 +300,12 @@ class IzPackYamlConfigParser(sbtData: SBTData,
   import Constants._
 
   private class ConfigTemplate(variables: Map[String, String])
-          extends UnixShellStringTemplate({n => Variables.get(n) },
+    extends UnixShellStringTemplate({n => Variables.get(n) },
                                           "[A-Za-z0-9][A-Za-z0-9_]+", true) {
-            override def substitute(name: String): String = {
-              super.substitute(name).replace("@@@", "$")
-            }
-          }
+    override def sub(name: String): Either[String, String] = {
+      super.sub(name).right.map { _.replace("@@@", "$") }
+    }
+  }
 
   private val Variables = Map[String, String](
     // predefined IzPack variables to pass through
@@ -326,11 +326,12 @@ class IzPackYamlConfigParser(sbtData: SBTData,
     }
 
     catch {
-      case e: Throwable =>
+      case e: Throwable => {
         val e2 = findCorrectException(e)
-      if (logLevel == LogLevel.Debug)
-        e2.printStackTrace()
-      izError(e2.getMessage)
+        if (logLevel == LogLevel.Debug)
+          e2.printStackTrace()
+        izError(e2.getMessage)
+      }
     }
   }
 
@@ -353,17 +354,25 @@ class IzPackYamlConfigParser(sbtData: SBTData,
   private def preFilter(lines: List[String]): List[String] = {
     val template = new ConfigTemplate(Variables)
 
-    @tailrec def sub(pre: List[String], post: List[String]): List[String] = {
+    @tailrec def sub(pre: List[String], post: List[String]):
+      Either[String, List[String]] = {
       pre match {
         case Nil =>
-          post
+          Right(post)
 
-        case line :: tail =>
-          sub(tail, post ::: List(template.substitute(line)))
+        case line :: tail => {
+          template.sub(line) match {
+            case Left(e) => Left(e)
+            case Right(s) => sub(tail, post ::: List(s))
+          }
+        }
       }
     }
 
-    sub(lines, Nil)
+    sub(lines, Nil) match {
+      case Left(e) => throw new Exception(s"Error during filtering phase: $e")
+      case Right(s) => s
+    }
   }
 }
 
@@ -453,9 +462,9 @@ private[izpack] class IzPackYamlConfig extends IzPackSection with Util {
     val now = dateFormatter.format(new java.util.Date)
 
     <installation version="1.0">
+      {XMLComment("IzPack installation file.")}
+      {XMLComment(s"Generated by ${Constants.PluginBlurb}: $now")}
       {installerRequirementsToXML}
-      {new XMLComment("IzPack installation file.")}
-      {new XMLComment("Generated by SBT IzPack plugin: " + now)}
       {optionalSectionToXML(info, "Info")}
       {languagesToXML}
       {variablesToXML}
@@ -629,8 +638,11 @@ private[izpack] class Info extends IzPackSection with OptionStrings with Util {
 // InstallerRequirements section
 // ---------------------------------------------------------------------------
 
-private[izpack] class InstallerRequirement extends IzPackSection
-with Util with OptionStrings {
+private[izpack] class InstallerRequirement
+  extends IzPackSection
+  with Util
+  with OptionStrings {
+
   private val SectionName = "installerRequirement"
 
   def setCondition(v: String): Unit = setOption(Condition, v)
@@ -664,9 +676,13 @@ private[izpack] class Resources extends IzPackSection {
   }
 }
 
-private[izpack] class Resource extends OptionStrings
-with Util with HasParseType with XMLable {
-    private val SectionName = "resource"
+private[izpack] class Resource
+  extends OptionStrings
+  with Util
+  with HasParseType
+  with XMLable {
+
+  private val SectionName = "resource"
 
   import Implicits._
 
@@ -691,8 +707,10 @@ with Util with HasParseType with XMLable {
   }
 }
 
-private[izpack] class InstallDirectory extends Util
-with OperatingSystemConstraints {
+private[izpack] class InstallDirectory
+  extends Util
+  with OperatingSystemConstraints {
+
   import Globals._
 
   private var path: Option[String] = None
@@ -826,7 +844,14 @@ private[izpack] class Panels extends IzPackSection {
 
   def setPanel(panel: Panel): Unit = panels += panel
 
-  protected def sectionToXML = <panels> {panels.map(_.toXML)} </panels>
+  protected def sectionToXML = {
+
+    if (panels.exists(_ == null)) {
+      throw new IzConfigException("Empty panel section(s) in YAML.")
+    }
+
+    <panels> {panels.map(_.toXML)} </panels>
+  }
 }
 
 /** A single panel.
@@ -1053,8 +1078,12 @@ private[izpack] class FileOrDirectory extends OneFile with Util {
   }
 }
 
-private[izpack] class FileSet extends OperatingSystemConstraints
-with Util with OptionStrings with Overridable {
+private[izpack] class FileSet
+  extends OperatingSystemConstraints
+  with Util
+  with OptionStrings
+  with Overridable {
+
   import Constants._
   import Implicits._
 
@@ -1068,38 +1097,43 @@ with Util with OptionStrings with Overridable {
   @BeanProperty var caseSensitive: Boolean = false
 
   def setIncludes(patternList: String): Unit = {
-    if ((patternList != null) && (patternList.trim.length > 0))
-      for (pattern <- ListDelims.split(patternList))
+    for (p <- Option(patternList) if p.trim.length > 0) {
+      for (pattern <- ListDelims.split(patternList)) {
         includes ++= FileUtil.eglob(pattern).toSet
+      }
+    }
   }
 
   def setExcludes(patternList: String): Unit = {
-    if ((patternList != null) && (patternList.trim.length > 0))
-      for (pattern <- ListDelims.split(patternList))
+    for (p <- Option(patternList) if p.trim.length > 0) {
+      for (pattern <- ListDelims.split(p)) {
         excludes ++= FileUtil.eglob(pattern).toSet
+      }
+    }
   }
 
   def setRegexExcludes(regexList: String): Unit = {
-    if ((regexList != null) && (regexList.trim.length > 0))
-      for (reString <- ListDelims.split(regexList))
+    for (r <- Option(regexList) if r.trim.length > 0) {
+      for (reString <- ListDelims.split(regexList)) {
         regexExcludes += reString.r
+      }
+    }
   }
 
   def setTargetDir(path: String): Unit = setOption(TargetDir, path)
   def setCondition(s: String): Unit = setOption(Condition, s)
 
   def toXMLSeq = {
-    /* &~ is set difference */
-    val paths = filterRegexExcludes((includes &~ excludes).toSet)
-    // XML Node objects appear to hash weirdly, so convert the set
-    // to a list, so we don't lose elements in the mapping.
-    paths.toList.map(fileToXML(_))
+    // NOTES:
+    // 1. &~ is set difference
+    // 2. XML Node objects appear to hash weirdly, so convert the set to a
+    //    list, so we don't lose elements in the mapping.
+    filterRegexExcludes((includes &~ excludes).toSet).toList.map(fileToXML(_))
   }
 
   private def filterRegexExcludes(paths: Set[String]) = {
-    paths.filter { path =>
-
-      ! regexExcludes.exists {re => re.findFirstIn(path) != None}
+    paths.filterNot { path =>
+      regexExcludes.exists { _.findFirstIn(path).isDefined }
     }
   }
 
@@ -1113,6 +1147,12 @@ with Util with OptionStrings with Overridable {
       </file>
 
     elem addAttributes Seq(("condition", getOption(Condition)))
+  }
+
+  override def toString = {
+    s"FileSet[includes=<${includes.mkString(", ")}> " +
+    s"excludes=<${excludes.mkString(", ")}> " +
+    s"regexExcludes=<${regexExcludes.mkString(", ")}>]"
   }
 }
 

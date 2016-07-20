@@ -6,29 +6,29 @@
 // See accompanying license file for license information.
 // ---------------------------------------------------------------------------
 
+import bintray.Keys._
+
 // ---------------------------------------------------------------------------
 // Basic settings
 
 name := "sbt-izpack"
 
-version := "0.3.4.2"
+version := "1.0.0"
 
 sbtPlugin := true
 
 organization := "org.clapper"
 
-licenses := Seq("BSD-like" ->
-  url("http://software.clapper.org/sbt-izpack/license.html")
-)
+licenses += ("BSD New", url("https://github.com/bmc/sbt-izpack/blob/master/LICENSE.md"))
 
 description := "SBT plugin to generate an IzPack installer"
 
 // ---------------------------------------------------------------------------
 // Additional compiler options and plugins
 
-scalacOptions ++= Seq("-deprecation", "-unchecked")
+scalacOptions ++= Seq("-deprecation", "-unchecked", "-feature")
 
-crossScalaVersions := Seq("2.9.2", "2.9.1")
+crossScalaVersions := Seq("2.10.4")
 
 seq(lsSettings :_*)
 
@@ -41,30 +41,20 @@ seq(lsSettings :_*)
 
 // External deps
 libraryDependencies ++= Seq(
-  "org.codehaus.izpack" % "izpack-standalone-compiler" % "4.3.4" % "compile",
-  "org.yaml" % "snakeyaml" % "1.9"
+  "org.codehaus.izpack" % "izpack-standalone-compiler" % "4.3.5" % "compile",
+  "org.yaml" % "snakeyaml" % "1.14"
 )
 
-libraryDependencies += "org.clapper" %% "grizzled-scala" % "1.0.13"
+libraryDependencies += "org.clapper" %% "grizzled-scala" % "1.3"
 
 // ---------------------------------------------------------------------------
 // Publishing criteria
 
-publishTo <<= (version) { version: String =>
-   val scalasbt = "http://scalasbt.artifactoryonline.com/scalasbt/"
-   val (name, url) = if (version.contains("-SNAPSHOT"))
-                       ("sbt-plugin-snapshots", scalasbt+"sbt-plugin-snapshots")
-                     else
-                       ("sbt-plugin-releases", scalasbt+"sbt-plugin-releases")
-   Some(Resolver.url(name, new URL(url))(Resolver.ivyStylePatterns))
-}
-
 publishMavenStyle := false
 
-publishArtifact in (Compile, packageBin) := true
+bintrayPublishSettings
 
-publishArtifact in (Test, packageBin) := false
+repository in bintray := "sbt-plugins"
 
-publishArtifact in (Compile, packageDoc) := false
+bintrayOrganization in bintray := None
 
-publishArtifact in (Compile, packageSrc) := false
